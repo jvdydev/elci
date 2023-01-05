@@ -1,0 +1,13 @@
+#+TITLE: elci - Emacs Linux Container Interface
+#+AUTHOR: jvdydev
+
+Small package to play around with controlling LXC from Emacs.
+
+Only internal Emacs features are used, however external requirements for LXC still apply (=lxc-*= command line tools).
+
+* (Planned) Features
+- Interactive view of containers
+- interactively create and customize containers
+- start/stop/freeze/unfreeze/destroy containers
+- send commands to running containers
+- Use on remote machines through TRAMP
