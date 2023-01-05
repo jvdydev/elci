@@ -5,6 +5,12 @@ Small package to play around with controlling LXC from Emacs.
 
 Only internal Emacs features are used, however external requirements for LXC still apply (=lxc-*= command line tools).
 
+* Installation
+With Emacs 29+, elci can be installed using =package-vc=:
+#+begin_src emacs-lisp
+(package-vc-install "https://github.com/jvdydev/elci.git")
+#+end_src
+
 * (Planned) Features
 - Interactive view of containers
 - interactively create and customize containers
