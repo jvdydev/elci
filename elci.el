@@ -121,10 +121,11 @@ Calls generic to paint DATA."
   (elci-conf--paint (cl-getf data :type 'no-type-symbol-in-data) data))
 
 ;;;;; Buffer setup
-(defun elci-conf--fill-buffer (title
-                               options)
+(defun elci-conf--fill-buffer (title options run-prompt)
   "Fill a buffer from TITLE and OPTIONS using EWOC.
 Return ewoc instance.
+
+RUN-PROMPT is a list (key name) to specify the action to extract options (Key should be a capital letter).
 
 OPTIONS is a list of (grouped) options.
 Multiple options may be wrapped in a group plist, containing the keys :gname (group name) and :options (the options list).
@@ -136,7 +137,7 @@ argument (string) - Argument prefix. Will be concat to the user-provided value (
 
 Other (optional) keys:
 value (string) - Allows setting the initial value (default value).
-required (bool) - Sets the option to be required (currently unused)."
+required (bool) - Sets the option to be required."
   (let ((ewoc-instance (ewoc-create #'elci-conf--ewoc-painter
                                     "Press the key in [?] to fill in option or run action."
                                     "")))
@@ -154,8 +155,8 @@ required (bool) - Sets the option to be required (currently unused)."
 
     ;; user-actions (quit / run)
     (ewoc-enter-last ewoc-instance (list :type 'group :gname "Actions"))
-    (ewoc-enter-last ewoc-instance (list :type 'action :act 'quit :name "Quit" :key ?q))
-    (ewoc-enter-last ewoc-instance (list :type 'action :act 'run :name "Run" :key ?r))
+    (ewoc-enter-last ewoc-instance (list :type 'action :act 'quit :name "Quit" :key ?Q))
+    (ewoc-enter-last ewoc-instance (list :type 'action :act 'run :name (cadr run-prompt) :key (car run-prompt)))
 
     ewoc-instance))
 
@@ -180,23 +181,29 @@ Return three values, the quit and run action keys as well as all allowed keys (i
     (cl-values quit-key run-key allowed-keys)))
 
 (defun elci-conf--extract-result (ewoc)
-  "Extract result (appended argument + value).
-May in the future raise error on required args missing."
+  "Extract result as list of lists with option lists (name argument value).
+Unused options are not set.
+Raise user-error on missing required options."
   (let ((result nil))
-    (elci-conf--foreach-ewoc-node ewoc current-node
-                                  ;; extract result
-                                  (let ((data (ewoc-data current-node)))
-                                    (when (and (eql (cl-getf data :type nil) 'option)
-                                               (cl-getf data :value nil))
-                                      (push (concat (cl-getf data :argument)
-                                                    (cl-getf data :value))
-                                            result))))
-    (mapconcat #'identity result " ")))
+    (elci-conf--foreach-ewoc-node
+     ewoc current-node
+     ;; extract result
+     (let ((data (ewoc-data current-node)))
+       ;; only extract option nodes
+       (when (eql (cl-getf data :type) 'option)
+         (let ((argument (cl-getf data :argument))
+               (required (cl-getf data :required))
+               (value (cl-getf data :value)))
+           (unless (or (not required)
+                       (and value required))
+             (user-error "Required option missing: %s" (cl-getf data :name)))
+           (when value
+             (push (list (cl-getf data :name) argument value) result))))))
+    result))
 
 (defun elci-conf--update-option-value (ewoc key)
   "Interactively update option value with key KEY in EWOC.
 Update appropriate ewoc data structure and call invalidate for the updated node."
-  (message "Called update for key `%s'" key)
   (elci-conf--foreach-ewoc-node ewoc current-node
                                 (let* ((data (ewoc-data current-node))
                                        (node-type (cl-getf data :type nil))
@@ -208,11 +215,10 @@ Update appropriate ewoc data structure and call invalidate for the updated node.
                                     (let ((new-value (elci-conf--read-value node-name nil node-old-value)))
                                       (setf (cl-getf data :value) new-value)
                                       (ewoc-set-data current-node data)
-                                      (message "New value: %s" new-value)
                                       (ewoc-invalidate ewoc current-node))))))
 
 ;;;;; Query function (call this from other places)
-(defun elci-conf--query-configuration (buffer-name title options &optional required-options)
+(defun elci-conf--query-configuration (buffer-name title options &optional error-on-quit run-prompt)
   "Query user to fill in data in a popup buffer named BUFFER-NAME.
 Data to be queried is added using OPTIONS (see `elci-conf--fill-buffer' for details).
 TITLE will be placed over-top.
@@ -220,7 +226,7 @@ TITLE will be placed over-top.
 Each options' argument will be returned with the associated user-data concatenated.
 If no user-data was provided, option will not be present.
 
-If REQUIRED-OPTIONS is non-nil, it may be a list of strings matching names defined in OPTIONS."
+If ERROR-ON-QUIT is non-nil, it may be a list of (type message) where type may be either :user or :error."
   (let ((result nil)
         (ewoc-instance nil))
     (elci-conf--with-popup-buffer
@@ -229,8 +235,7 @@ If REQUIRED-OPTIONS is non-nil, it may be a list of strings matching names defin
      (let ((inhibit-read-only t))
        ;; Fill buffer
        (erase-buffer)
-       ;; TODO pass required-options here
-       (setq ewoc-instance (elci-conf--fill-buffer title options)))
+       (setq ewoc-instance (elci-conf--fill-buffer title options (or run-prompt '(?R "Run")))))
 
      ;; clear minibuffer
      (message " ")
@@ -242,7 +247,13 @@ If REQUIRED-OPTIONS is non-nil, it may be a list of strings matching names defin
        (let ((quit nil))
          (while (not quit)
            (let ((key (read-char-exclusive)))
-             (cond ((char-equal key quit-action-key) (setq quit t))
+             (cond ((char-equal key quit-action-key)
+                    (progn
+                      (setq quit t)
+                      (when error-on-quit
+                        (cond ((eql :user (car error-on-quit)) (user-error (nth 1 error-on-quit)))
+                              ((eql :error (car error-on-quit)) (error (nth 1 error-on-quit)))
+                              (t (error "Malformed ERROR-ON-QUIT argument (%s)." error-on-quit))))))
                    ((char-equal key run-action-key)
                     (progn
                       (setq result
@@ -279,6 +290,15 @@ STARTC and ENDC may each be lists of additional characters to trim at start and 
     (when (string-match end-regex new-line)
       (setq new-line (replace-match "" t t new-line)))
     new-line))
+
+(defun elci-lxc--find-option (name options)
+  "Find option with NAME from OPTIONS as generated by `elci-conf--query-configuration'.
+Return nil if option is missing."
+    (car (cl-remove-if-not (lambda (o) (string-equal name (car o))) options)))
+
+(defun elci-lxc--construct-args-from-options (options)
+  "Construct arguments to pass to LXC utilities from OPTIONS."
+  (mapconcat (lambda (o) (concat (nth 1 o) (nth 2 o))) options " "))
 
 ;;;; listing containers
 (cl-defgeneric elci-lxc--propertize-entry (type entry)
@@ -346,6 +366,67 @@ If PROPERTIZE-ENTRIES is non-nil, apply properties using ELCI-LXC--PROPERTIZE-EN
                       (cdr out))))
       (cl-values header entries))))
 
+;;;; create a container
+(defcustom elci-create-template-options
+  '((:template "download" :options ((:gname "Required"
+                                            :options ((:name "Distribution" :key ?d :argument "-d " :required t)
+                                                      (:name "Release" :key ?r :argument "-r " :required t)
+                                                      (:name "Architecture" :key ?a :argument "-a " :required t)))
+                                    (:gname "Optional"
+                                            :options ((:name "variant" :key ?v :argument "--variant ")
+                                                      (:name "server" :key ?s :argument "--server ")))))
+    (:template "busybox" :options ((:name "Busybox Path" :key ?b :argument "--busybox-path ")))
+    (:template "oci" :options ((:gname "Required"
+                                       :options ((:name "URL" :key ?u :argument "-u " :required t)))
+                               (:gname "Optional"
+                                       :options ((:name "username" :key ?n :argument "--username")
+                                                 (:name "password" :key ?p :argument "--password")))))
+    (:template "local" :options ((:gname "Special"
+                                         :options ((:name "Metadata Path" :key ?m :argument "-m ")
+                                                   (:name "fs-tree Path" :key ?f :argument "-f "))))))
+  "List of plists with options for each known template to elci.
+Used to construct elci-conf buffer for template customization.")
+
+(defun elci-lxc--create-fetch-template-options (template)
+  "Return template options from `elci-create-template-options' for TEMPLATE.
+Raise user-error \"Unkown template\" if no template could be found."
+  (let ((template-opts
+         (car (cl-remove-if-not (lambda (o) (string-equal template (cl-getf o :template ""))) elci-create-template-options))))
+    (unless template-opts
+      (user-error "Unkown template: %s" template))
+    (cl-getf template-opts :options)))
+
+(defun elci-lxc--create-options ()
+  "Run `elci-conf--query-configuration' to generate arguments for lxc-create."
+  (elci-conf--query-configuration "*ELCI: lxc-create*" "Create a container"
+                                  '((:name "Name" :key ?n :argument "--name=" :required t)
+                                    (:name "Template" :key ?t :argument "--template=" :required t))
+                                  '(:user "User arborted creation")
+                                  '(?C "Continue")))
+
+(defun elci-lxc--create-template-options (template)
+  "Run `elci-conf--query-configuration' to generate arguments to pass to TEMPLATE for lxc-create.
+Template-specific options are retrieved from `elci-create-template-options'."
+  (elci-conf--query-configuration "*ELCI: Template*" (format "Configure template: %s" template)
+                                  (elci-lxc--create-fetch-template-options template)
+                                  '(:user "User arborted creation")
+                                  '(?C "Create")))
+
+
+(defun elci-lxc--create-container ()
+  "Interactively query container-creation information using elci-conf.
+Return the command to call."
+  (let* ((create-opts (elci-lxc--create-options))
+         (template-opts (elci-lxc--create-template-options (car (last (elci-lxc--find-option "Template" create-opts))))))
+    (format "lxc-create %s -- %s"
+            (elci-lxc--construct-args-from-options create-opts)
+            (elci-lxc--construct-args-from-options template-opts))))
+
+(defun elci-create-container ()
+  "Interactively create a container."
+  (interactive)
+  (async-shell-command (elci-lxc--create-container) "*elci: lxc-create*"))
+
 ;;; elci: Interactive buffer
 (defvar-local elci--header-list nil
   "Buffer-local storage for header to update fields appropriately.")
@@ -360,7 +441,6 @@ If PROPERTIZE-ENTRIES is non-nil, apply properties using ELCI-LXC--PROPERTIZE-EN
     (setq tabulated-list-entries (mapcar (lambda (e) (list nil (vconcat e))) entries))
     (tabulated-list-init-header)
     (tabulated-list-print)))
-
 
 (defun elci--update-buffer ()
   (when (eql major-mode 'elci-mode)
