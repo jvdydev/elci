@@ -281,6 +281,36 @@ STARTC and ENDC may each be lists of additional characters to trim at start and 
     new-line))
 
 ;;;; listing containers
+(cl-defgeneric elci-lxc--propertize-entry (type entry)
+  "Propertize ENTRY depending on TYPE.
+If TYPE is unkown, return unporpertized ENTRY."
+  entry)
+
+(cl-defmethod elci-lxc--propertize-entry ((type (eql 'STATE)) entry)
+  ;; error, success, vc-dir-directory
+  (let ((foreground (pcase (intern entry)
+                      ('RUNNING "green")
+                      ('STOPPED "red")
+                      ('FROZEN "blue"))))
+    (when foreground
+      (put-text-property 0 (length entry) 'face (cons 'foreground-color foreground) entry)))
+  entry)
+
+
+(defun elci-lxc--propertize-entries (header entries)
+  "Propertize all items in ENTRIES given HEADER.
+Return a new set of ENTRIES with the same data, but propertized."
+  (let ((prop-entries '())
+        (prop-entry '()))
+    (dolist (entry entries prop-entries)
+      (setq prop-entry '())
+      (dotimes (i (length entry))
+        (setq prop-entry (append prop-entry (list
+                                             (elci-lxc--propertize-entry (nth i header)
+                                                                         (nth i entry))))))
+      (setq prop-entries (append prop-entries (list prop-entry))))
+    prop-entries))
+
 (defun elci-lxc--maybe-construct-arg (flag argument &optional test)
   "If ARGUMENT is non-nil (and TEST succeeds), construct a string \"FLAG ARGUMENT\", else return an empty string.
 TEST may be an optional single-argument function that takes ARGUMENT and return a truthy value."
@@ -290,18 +320,31 @@ TEST may be an optional single-argument function that takes ARGUMENT and return 
     ""))
 
 
-(defun elci-lxc--list-containers (fancy-format-options)
-  "Run container listing.
-Return two values, header (list) and list of entries (each entry is a list)."
+(defun elci-lxc--list-containers (fancy-format-options &optional propertize-entries)
+  "Run container listing with FANCY-FORMAT-OPTIONS.
+Return two values, header (list of symbols) and list of entries (each entry is a list of strings).
+If PROPERTIZE-ENTRIES is non-nil, apply properties using ELCI-LXC--PROPERTIZE-ENTRIES."
   (let* ((fancy-format (elci-lxc--join-symbols "," fancy-format-options))
-         (ls (mapcar (lambda (l) (string-split l " " t))
-                     (string-split
-                      (shell-command-to-string
-                       (elci-lxc--join-strings " "
-                                               (list "lxc-ls -f"
-                                                 (elci-lxc--maybe-construct-arg "-F" fancy-format))))
-                       "\n" t))))
-    (cl-values (car ls) (cdr ls))))
+         (ls (string-split
+               (shell-command-to-string
+                (elci-lxc--join-strings " "
+                                        (list "lxc-ls -f"
+                                              (elci-lxc--maybe-construct-arg "-F" fancy-format))))
+               "[\n\r]+" t)))
+    (when (and (eql 1 (length ls))
+               (save-match-data
+                 (string-match-p "^Invalid Key" (car ls))))
+      (user-error (format "LXC Error: %s" (car ls))))
+
+    (let* ((out (mapcar (lambda (l) (string-split
+                                (replace-regexp-in-string ", *" "," l)
+                                " " t))
+                        ls))
+           (header (mapcar #'intern (car out)))
+           (entries (if propertize-entries
+                        (elci-lxc--propertize-entries header (cdr out))
+                      (cdr out))))
+      (cl-values header entries))))
 
 ;;; elci: Interactive buffer
 (defvar-local elci--header-list nil
@@ -311,16 +354,18 @@ Return two values, header (list) and list of entries (each entry is a list)."
 (defun elci--setup-buffer (format-options)
   (setq elci--header-list format-options)
   (cl-multiple-value-bind (header entries)
-      (elci-lxc--list-containers format-options)
-    (setq tabulated-list-format (vconcat (mapcar (lambda (e) (list e (/ 100 (length header)))) header)))
+      (elci-lxc--list-containers format-options t)
+    (setq tabulated-list-format (vconcat (mapcar (lambda (e) (list e (/ 100 (length header))))
+                                                 (mapcar #'symbol-name header))))
     (setq tabulated-list-entries (mapcar (lambda (e) (list nil (vconcat e))) entries))
     (tabulated-list-init-header)
     (tabulated-list-print)))
 
+
 (defun elci--update-buffer ()
   (when (eql major-mode 'elci-mode)
     (cl-multiple-value-bind (header entries)
-        (elci-lxc--list-containers elci--header-list)
+        (elci-lxc--list-containers elci--header-list t)
       (setq tabulated-list-entries (mapcar (lambda (e) (list nil (vconcat e))) entries)))))
 
 (defun elci--find-argument (string arg)
