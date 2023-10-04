@@ -1,6 +1,14 @@
 #+TITLE: elci - Emacs Linux Container Interface
 #+AUTHOR: jvdydev
 
+#+begin_quote
+INFO
+
+This repo is no longer maintained.
+I'll rebuild it differently at some point ... maybe.
+#+end_quote
+
+
 Small package to play around with controlling LXC from Emacs.
 
 Only internal Emacs features are used, however external requirements for LXC still apply (=lxc-*= command line tools).
